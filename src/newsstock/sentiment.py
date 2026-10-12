@@ -1,12 +1,12 @@
-"""Headline sentiment scoring with FinBERT and per-session aggregation.
+"""Scoring headline sentiment with FinBERT and summarizing it per trading day.
 
-:class:`FinBertScorer` uses the finance-specific ProsusAI/finbert model from
-Hugging Face. :class:`LexiconScorer` is a lightweight fallback (a small
-finance word list) used for offline tests or when ``transformers`` is not
-installed; results from it should not be reported as FinBERT results.
+FinBERT (ProsusAI/finbert) is a BERT model fine-tuned on financial text. For
+each headline it gives three probabilities: positive, negative and neutral.
+
+If FinBERT can't be loaded (no internet, or transformers isn't installed) we
+fall back to a very simple word-counting scorer. That fallback is only meant
+for testing the code; real results should come from FinBERT.
 """
-
-from __future__ import annotations
 
 import re
 
@@ -19,80 +19,97 @@ LABELS = ["positive", "negative", "neutral"]
 class FinBertScorer:
     name = "finbert"
 
-    def __init__(self, model_name: str = "ProsusAI/finbert", batch_size: int = 32, device: str | None = None):
+    def __init__(self, model_name="ProsusAI/finbert", batch_size=32):
         import torch
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
         self.torch = torch
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForSequenceClassification.from_pretrained(model_name).to(self.device).eval()
+        self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        self.model.to(self.device)
+        self.model.eval()
         self.batch_size = batch_size
-        id2label = {i: l.lower() for i, l in self.model.config.id2label.items()}
-        self.order = [next(i for i, l in id2label.items() if l == lab) for lab in LABELS]
 
-    def score(self, texts: list[str]) -> np.ndarray:
-        """Return an (n, 3) array of [positive, negative, neutral] probabilities."""
-        probs = []
+        # The model's outputs aren't necessarily in our LABELS order,
+        # so we look up which output column is which label.
+        model_labels = {i: label.lower() for i, label in self.model.config.id2label.items()}
+        self.column_order = [next(i for i, l in model_labels.items() if l == wanted) for wanted in LABELS]
+
+    def score(self, texts):
+        """Return one row per headline: [p_positive, p_negative, p_neutral]."""
+        results = []
         with self.torch.no_grad():
             for i in range(0, len(texts), self.batch_size):
-                batch = self.tokenizer(texts[i:i + self.batch_size], padding=True, truncation=True, max_length=64, return_tensors="pt").to(self.device)
-                p = self.torch.softmax(self.model(**batch).logits, dim=-1).cpu().numpy()
-                probs.append(p[:, self.order])
-        return np.vstack(probs) if probs else np.zeros((0, 3))
+                batch = texts[i:i + self.batch_size]
+                tokens = self.tokenizer(batch, padding=True, truncation=True, max_length=64, return_tensors="pt")
+                tokens = tokens.to(self.device)
+                logits = self.model(**tokens).logits
+                probs = self.torch.softmax(logits, dim=-1).cpu().numpy()
+                results.append(probs[:, self.column_order])
+        if not results:
+            return np.zeros((0, 3))
+        return np.vstack(results)
 
 
-class LexiconScorer:
-    name = "lexicon"
+class WordListScorer:
+    """Backup scorer: counts positive and negative finance words in a headline."""
 
-    POSITIVE = {
+    name = "word list (fallback)"
+
+    POSITIVE_WORDS = {
         "beat", "beats", "surge", "surges", "soar", "soars", "rally", "rallies", "gain", "gains", "jump", "jumps",
         "record", "growth", "upgrade", "upgraded", "strong", "profit", "profits", "rise", "rises", "outperform",
         "bullish", "boost", "boosts", "approval", "wins", "expands", "raises", "higher", "tops",
     }
-    NEGATIVE = {
+    NEGATIVE_WORDS = {
         "miss", "misses", "plunge", "plunges", "fall", "falls", "drop", "drops", "slump", "slumps", "loss", "losses",
         "downgrade", "downgraded", "weak", "lawsuit", "probe", "recall", "cut", "cuts", "decline", "declines",
         "bearish", "layoffs", "fine", "fined", "warns", "lower", "sinks", "crash", "investigation",
     }
 
-    def score(self, texts: list[str]) -> np.ndarray:
-        out = np.zeros((len(texts), 3))
-        for i, t in enumerate(texts):
-            words = re.findall(r"[a-z]+", str(t).lower())
-            pos = sum(w in self.POSITIVE for w in words)
-            neg = sum(w in self.NEGATIVE for w in words)
-            logits = np.array([pos, neg, 0.5])
-            e = np.exp(logits - logits.max())
-            out[i] = e / e.sum()
-        return out
+    def score(self, texts):
+        scores = np.zeros((len(texts), 3))
+        for i, text in enumerate(texts):
+            words = re.findall(r"[a-z]+", str(text).lower())
+            n_pos = sum(word in self.POSITIVE_WORDS for word in words)
+            n_neg = sum(word in self.NEGATIVE_WORDS for word in words)
+            # Turn the counts into probabilities with a softmax.
+            # The 0.5 for neutral means a headline with no signal words leans neutral.
+            raw = np.array([n_pos, n_neg, 0.5])
+            exp = np.exp(raw - raw.max())
+            scores[i] = exp / exp.sum()
+        return scores
 
 
-def get_scorer(prefer_finbert: bool = True, model_name: str = "ProsusAI/finbert"):
-    if prefer_finbert:
+def get_scorer(use_finbert=True, model_name="ProsusAI/finbert"):
+    if use_finbert:
         try:
             return FinBertScorer(model_name)
-        except Exception as exc:  # missing packages or no network for the model download
-            print(f"[sentiment] FinBERT unavailable ({exc!r}); falling back to lexicon scorer.")
-    return LexiconScorer()
+        except Exception as error:
+            print(f"Couldn't load FinBERT ({error}). Using the word-list scorer instead.")
+    return WordListScorer()
 
 
-def score_headlines(news: pd.DataFrame, scorer) -> pd.DataFrame:
-    probs = scorer.score(news["headline"].astype(str).tolist())
-    out = news.copy()
-    out[["p_pos", "p_neg", "p_neu"]] = probs
-    out["sent_label"] = np.array(LABELS)[probs.argmax(axis=1)] if len(out) else []
-    return out
+def score_headlines(headlines, scorer):
+    probs = scorer.score(headlines["headline"].astype(str).tolist())
+    scored = headlines.copy()
+    scored["p_pos"] = probs[:, 0]
+    scored["p_neg"] = probs[:, 1]
+    scored["p_neu"] = probs[:, 2]
+    # The label is whichever of the three has the highest probability.
+    scored["sent_label"] = [LABELS[i] for i in probs.argmax(axis=1)] if len(scored) else []
+    return scored
 
 
-def aggregate_sentiment(scored: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate scored headlines to one row per (ticker, session)."""
-    s = scored.assign(
-        net=scored["p_pos"] - scored["p_neg"],
-        is_pos=(scored["sent_label"] == "positive").astype(float),
-        is_neg=(scored["sent_label"] == "negative").astype(float),
-    )
-    agg = s.groupby(["ticker", "session"]).agg(
+def aggregate_sentiment(scored):
+    """Combine all headlines for the same stock and trading day into one row."""
+    scored = scored.copy()
+    scored["net"] = scored["p_pos"] - scored["p_neg"]  # above 0 = more positive than negative
+    scored["is_pos"] = (scored["sent_label"] == "positive").astype(float)
+    scored["is_neg"] = (scored["sent_label"] == "negative").astype(float)
+
+    daily = scored.groupby(["ticker", "session"]).agg(
         news_count=("headline", "size"),
         sent_pos_mean=("p_pos", "mean"),
         sent_neg_mean=("p_neg", "mean"),
@@ -102,5 +119,7 @@ def aggregate_sentiment(scored: pd.DataFrame) -> pd.DataFrame:
         sent_pos_share=("is_pos", "mean"),
         sent_neg_share=("is_neg", "mean"),
     ).reset_index()
-    agg["sent_net_std"] = agg["sent_net_std"].fillna(0.0)
-    return agg.rename(columns={"session": "date"})
+
+    # With only one headline the standard deviation is undefined; call it 0.
+    daily["sent_net_std"] = daily["sent_net_std"].fillna(0.0)
+    return daily.rename(columns={"session": "date"})

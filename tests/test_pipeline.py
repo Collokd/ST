@@ -5,9 +5,9 @@ import pytest
 from newsstock.config import Config
 from newsstock.features import MARKET_FEATURES, SENTIMENT_FEATURES, build_dataset
 from newsstock.modeling import chronological_split
-from newsstock.news_data import clean_news
+from newsstock.news_data import clean_headlines
 from newsstock.pipeline import run
-from newsstock.sentiment import LexiconScorer, aggregate_sentiment, score_headlines
+from newsstock.sentiment import WordListScorer, aggregate_sentiment, score_headlines
 from newsstock.sessions import map_to_sessions
 
 
@@ -42,7 +42,7 @@ def test_clean_news_drops_duplicates_missing_and_unrelated():
         "headline": ["Apple beats estimates", "APPLE beats estimates!", "Pie recipes for fall", "Apple news", "Apple shares fall"],
         "url": ["u1", "u2", "u3", "u4", "u5"],
     })
-    out = clean_news(df, "AAPL")
+    out = clean_headlines(df, "AAPL")
     assert out["headline"].tolist() == ["Apple beats estimates", "Apple shares fall"]
     assert (out["ticker"] == "AAPL").all()
 
@@ -67,7 +67,7 @@ def test_sentiment_aggregation_and_no_news_fill():
     market = _market(pd.bdate_range("2024-01-01", periods=30))
     news = pd.DataFrame({"ticker": "AAPL", "session": [market["date"].iloc[25]] * 2,
                          "headline": ["Apple shares surge on record profit", "Apple faces lawsuit, shares fall"]})
-    agg = aggregate_sentiment(score_headlines(news, LexiconScorer()))
+    agg = aggregate_sentiment(score_headlines(news, WordListScorer()))
     assert agg["news_count"].tolist() == [2]
     ds = build_dataset(market, agg)
     assert set(SENTIMENT_FEATURES) <= set(ds.columns)

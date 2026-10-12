@@ -1,65 +1,99 @@
-"""Synthetic market + news data for offline demos and tests.
+"""Fake (synthetic) prices and headlines for testing the code without internet.
 
-The generator plants a weak link between headline tone and the *next* day's
-return, so the pipeline has a known signal to detect. It is for checking the
-code end to end only; results on it say nothing about real markets.
+We deliberately build in a small link between today's news tone and
+tomorrow's return, so we know there is a signal for the models to find.
+This only checks that the code works - results on this data say nothing
+about the real stock market.
 """
-
-from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-from .config import DEFAULT_UNIVERSE
+from .config import COMPANIES
 
-_NAMES = {"AAPL": "Apple", "MSFT": "Microsoft", "AMZN": "Amazon", "TSLA": "Tesla", "NVDA": "Nvidia"}
-_POS = ["{n} shares surge after earnings beat", "{n} gains on strong growth outlook", "Analysts upgrade {n} on record profit",
-        "{n} rallies as demand jumps", "{n} raises guidance, stock rises"]
-_NEG = ["{n} shares plunge after earnings miss", "{n} falls on weak outlook", "Analysts downgrade {n} amid probe",
-        "{n} slumps as losses widen", "{n} cuts forecast, stock drops"]
-_NEU = ["{n} to hold annual shareholder meeting", "{n} announces new product event date", "{n} names new board member",
-        "What to watch for {n} this week", "{n} files quarterly report"]
+COMPANY_NAMES = {"AAPL": "Apple", "MSFT": "Microsoft", "AMZN": "Amazon", "TSLA": "Tesla", "NVDA": "Nvidia"}
+
+POSITIVE_HEADLINES = [
+    "{name} shares surge after earnings beat", "{name} gains on strong growth outlook",
+    "Analysts upgrade {name} on record profit", "{name} rallies as demand jumps",
+    "{name} raises guidance, stock rises",
+]
+NEGATIVE_HEADLINES = [
+    "{name} shares plunge after earnings miss", "{name} falls on weak outlook",
+    "Analysts downgrade {name} amid probe", "{name} slumps as losses widen",
+    "{name} cuts forecast, stock drops",
+]
+NEUTRAL_HEADLINES = [
+    "{name} to hold annual shareholder meeting", "{name} announces new product event date",
+    "{name} names new board member", "What to watch for {name} this week", "{name} files quarterly report",
+]
 
 
-def trading_days(start: str, end: str) -> pd.DatetimeIndex:
+def fake_trading_days(start, end):
+    """Weekdays, minus New Year's Day, July 4th and Christmas."""
     days = pd.bdate_range(start, end)
-    holidays = [d for d in days if (d.month, d.day) in {(1, 1), (7, 4), (12, 25)}]
+    holidays = [d for d in days if (d.month, d.day) in [(1, 1), (7, 4), (12, 25)]]
     return days.difference(pd.DatetimeIndex(holidays))
 
 
-def make_synthetic(tickers: list[str] | None = None, start: str = "2022-01-01", end: str = "2024-12-31",
-                   signal: float = 0.006, seed: int = 0) -> tuple[pd.DataFrame, pd.DataFrame]:
+def make_synthetic(tickers=None, start="2022-01-01", end="2024-12-31", signal=0.006, seed=0):
     rng = np.random.default_rng(seed)
-    tickers = tickers or list(DEFAULT_UNIVERSE)
-    days = trading_days(start, end)
-    market, news = [], []
-    for t in tickers:
-        name = _NAMES.get(t, t)
-        tone = rng.normal(0, 1, len(days))  # latent news tone revealed by session t's close
-        ret = rng.normal(0.0003, 0.018, len(days))
-        ret[1:] += signal * tone[:-1]
-        close = 100 * np.exp(np.cumsum(ret))
-        open_ = close * np.exp(rng.normal(0, 0.005, len(days)))
-        high = np.maximum(open_, close) * (1 + np.abs(rng.normal(0, 0.008, len(days))))
-        low = np.minimum(open_, close) * (1 - np.abs(rng.normal(0, 0.008, len(days))))
-        vol = rng.lognormal(16, 0.3, len(days)) * (1 + 0.3 * np.abs(tone))
-        market.append(pd.DataFrame({"ticker": t, "date": days, "open": open_, "high": high, "low": low, "close": close, "volume": vol.round()}))
+    tickers = tickers or list(COMPANIES)
+    days = fake_trading_days(start, end)
+    n_days = len(days)
 
-        prev_close = pd.Timestamp(days[0]) - pd.Timedelta(days=1)
-        for d, s in zip(days, tone):
-            # Headlines for session d fall between the previous close and d's close (16:00 ET).
-            window_start = (prev_close + pd.Timedelta(hours=16)).tz_localize("America/New_York")
-            window_end = (d + pd.Timedelta(hours=16)).tz_localize("America/New_York")
-            prev_close = d
-            n = rng.poisson(3 * (1 + abs(s)))
-            secs = rng.uniform(0, (window_end - window_start).total_seconds() - 60, n)
-            for sec in secs:
-                p_pos = 1 / (1 + np.exp(-1.5 * s))
-                u = rng.random()
-                bank = _NEU if u < 0.35 else (_POS if rng.random() < p_pos else _NEG)
-                news.append({"ticker": t, "published_utc": (window_start + pd.Timedelta(seconds=float(sec))).tz_convert("UTC"),
-                             "headline": rng.choice(bank).format(n=name), "url": None, "source": "synthetic"})
-    news_df = pd.DataFrame(news)
-    # Add exact duplicates (syndication) so cleaning is exercised.
-    news_df = pd.concat([news_df, news_df.sample(frac=0.05, random_state=seed)], ignore_index=True)
-    return pd.concat(market, ignore_index=True), news_df
+    all_prices = []
+    all_news = []
+
+    for ticker in tickers:
+        name = COMPANY_NAMES.get(ticker, ticker)
+
+        # The hidden "news tone" of each day (positive = good news).
+        tone = rng.normal(0, 1, n_days)
+
+        # Daily returns are random noise, plus a small push from YESTERDAY's tone.
+        returns = rng.normal(0.0003, 0.018, n_days)
+        returns[1:] += signal * tone[:-1]
+
+        close = 100 * np.exp(np.cumsum(returns))
+        open_price = close * np.exp(rng.normal(0, 0.005, n_days))
+        high = np.maximum(open_price, close) * (1 + np.abs(rng.normal(0, 0.008, n_days)))
+        low = np.minimum(open_price, close) * (1 - np.abs(rng.normal(0, 0.008, n_days)))
+        volume = rng.lognormal(16, 0.3, n_days) * (1 + 0.3 * np.abs(tone))
+
+        all_prices.append(pd.DataFrame({
+            "ticker": ticker, "date": days, "open": open_price, "high": high,
+            "low": low, "close": close, "volume": volume.round(),
+        }))
+
+        # Headlines for a trading day are published between the previous close and this day's close.
+        previous_day = days[0] - pd.Timedelta(days=1)
+        for day, day_tone in zip(days, tone):
+            window_start = (previous_day + pd.Timedelta(hours=16)).tz_localize("America/New_York")
+            window_end = (day + pd.Timedelta(hours=16)).tz_localize("America/New_York")
+            previous_day = day
+
+            n_headlines = rng.poisson(3 * (1 + abs(day_tone)))  # bigger news days get more headlines
+            window_seconds = (window_end - window_start).total_seconds() - 60
+            chance_positive = 1 / (1 + np.exp(-1.5 * day_tone))
+
+            for _ in range(n_headlines):
+                if rng.random() < 0.35:
+                    options = NEUTRAL_HEADLINES
+                elif rng.random() < chance_positive:
+                    options = POSITIVE_HEADLINES
+                else:
+                    options = NEGATIVE_HEADLINES
+                published = window_start + pd.Timedelta(seconds=float(rng.uniform(0, window_seconds)))
+                all_news.append({
+                    "ticker": ticker,
+                    "published_utc": published.tz_convert("UTC"),
+                    "headline": rng.choice(options).format(name=name),
+                    "url": None,
+                    "source": "synthetic",
+                })
+
+    news = pd.DataFrame(all_news)
+    # Copy 5% of the headlines to imitate the same story being reposted, so the cleaning step has work to do.
+    news = pd.concat([news, news.sample(frac=0.05, random_state=seed)], ignore_index=True)
+    return pd.concat(all_prices, ignore_index=True), news

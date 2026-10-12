@@ -14,21 +14,23 @@ CIS 635 · Data Mining and Knowledge Discovery · Fall 2026
 | Sentiment | `newsstock/sentiment.py` | FinBERT (`ProsusAI/finbert`) positive/negative/neutral probabilities, aggregated per ticker/session (means, shares, net tone, news count) |
 | Features & label | `newsstock/features.py` | Lagged returns, 5/20-day volatility, volume change and z-score, high-low range, SMA ratio; label = next session's close above today's close |
 | Models | `newsstock/modeling.py` | Logistic regression (baseline), decision tree, random forest, SVM; chronological train/val/test split with a 1-day gap, tuning on validation, refit on train+val, one held-out test evaluation; scaling fit on training rows only |
-| Reporting | `newsstock/reporting.py` | Accuracy, precision, recall, F1, ROC-AUC, confusion matrices, market-only vs market+sentiment deltas, EDA plots |
-| Optional | `newsstock/clustering.py` | Exploratory k-means with silhouette-based k |
+| Reporting | `newsstock/reporting.py` | Accuracy, balanced accuracy, precision, recall, F1, ROC-AUC, confusion matrices, market-only vs market+sentiment deltas, EDA plots |
+| Clustering | `newsstock/clustering.py` | Exploratory k-means: k chosen by silhouette score, clusters compared to the up/down label with a cross-tab |
 
 Every feature for session *t* uses only information available at *t*'s close, so there is no look-ahead leakage (`tests/test_pipeline.py` checks this).
 
 ## Running
 
-**Google Colab:** open `notebooks/stock_news_sentiment.ipynb`, set `SOURCE`, and run all cells.
+**Google Colab (main deliverable):** `notebooks/stock_news_sentiment.ipynb` is self-contained and laid out like the final report (introduction, data, preprocessing and integration, methodology, results, discussion, conclusion, references). Open it at
+https://colab.research.google.com/github/Collokd/ST/blob/claude/focused-fermat-ayoya3/notebooks/stock_news_sentiment.ipynb
+(or upload it in Colab via *File → Upload notebook*), set `DATA_SOURCE`, and choose *Runtime → Run all*. It doesn't need anything else from this repo.
 
-**Locally:**
+**Command line:** the `newsstock` package runs the same steps as a script and is what the tests check.
 
 ```bash
 pip install -e ".[finbert,dev]"
 
-# Offline end-to-end check on synthetic data (results are not meaningful for real markets)
+# Quick offline check on synthetic data (results are not meaningful for real markets)
 python -m newsstock.pipeline --source synthetic --no-finbert
 
 # Real data: GDELT + Stooq, cached to data/raw/
@@ -38,7 +40,7 @@ python -m newsstock.pipeline --source online --tickers AAPL MSFT NVDA --start 20
 #                       data/raw/news_<TICKER>.csv   (published_utc,headline[,url,source])
 python -m newsstock.pipeline --source csv
 
-pytest            # unit tests + end-to-end synthetic run
+pytest
 ```
 
 Outputs go to `outputs/`: `test_metrics.csv`, `market_vs_sentiment.csv`, `confusion_matrices.png`, `accuracy_comparison.png`, `f1_comparison.png`, `eda.png` (and `kmeans_profile.csv` with `--cluster`). Intermediate data goes to `data/processed/`.
