@@ -21,7 +21,7 @@ Every feature for session *t* uses only information available at *t*'s close, so
 
 ## Running
 
-**Google Colab (main deliverable):** `notebooks/stock_news_sentiment.ipynb` is self-contained and laid out like the final report (introduction, data, preprocessing and integration, methodology, results, discussion, conclusion, references). Open it at
+**Google Colab (main deliverable):** `notebooks/stock_news_sentiment.ipynb` is self-contained and follows the CRISP-DM phases (Business Understanding, Data Understanding, Data Preparation, Modeling, Evaluation, Deployment), with a note before every code cell explaining what it does. A table at the top maps each phase to the final-report sections. Open it at
 https://colab.research.google.com/github/Collokd/ST/blob/claude/focused-fermat-ayoya3/notebooks/stock_news_sentiment.ipynb
 (or upload it in Colab via *File → Upload notebook*), set `DATA_SOURCE`, and choose *Runtime → Run all*. It doesn't need anything else from this repo.
 
